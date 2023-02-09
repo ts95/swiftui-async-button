@@ -1,22 +1,29 @@
 import SwiftUI
+#if os(watchOS)
+import WatchKit
+#endif
 
-public struct AsyncButton<Label> : View where Label : View {
+public struct AsyncButton<Label: View>: View {
     private let role: ButtonRole?
     private let options: AsyncButtonOptions
     private let transaction: Transaction
     private let action: () async throws -> Void
-    private let label: ([AsyncButtonOperation]) -> Label
-    
-    @State private var operations: [AsyncButtonOperation] = []
+    private let label: (Bool) -> Label
+
+    @State private var operations = [AnyHashable: AsyncButtonOperation]()
     @State private var showingErrorAlert = false
     @State private var localizedError: AnyLocalizedError?
-    
+
+#if os(iOS)
     private let generator = UINotificationFeedbackGenerator()
-    
+#elseif os(watchOS)
+    private let watchDevice = WKInterfaceDevice.current()
+#endif
+
     @State private var tint: Color?
-    
+
     var operationIsLoading: Bool {
-        operations.contains { operation in
+        operations.values.contains { operation in
             if case .loading = operation {
                 return true
             } else {
@@ -24,46 +31,54 @@ public struct AsyncButton<Label> : View where Label : View {
             }
         }
     }
-    
+
     var showProgressView: Bool {
+#if os(watchOS)
+        false
+#else
         options.contains(.showProgressViewOnLoading) && operationIsLoading
+#endif
     }
-    
-    var disableButton: Bool {
+
+    var buttonDisabled: Bool {
         options.contains(.disableButtonOnLoading) && operationIsLoading
     }
-    
+
     public var body: some View {
         Button(
             role: role,
             action: {
                 if options.contains(.disallowParallelOperations) {
-                    guard operationIsLoading == false else { return }
+                    guard !operationIsLoading else { return }
                 }
                 let actionTask = Task {
                     try await action()
                 }
-                operations.append(.loading(actionTask))
+                operations[actionTask] = .loading(actionTask)
                 Task {
-                    if options.contains(.enableNotificationFeedback) {
+                    if options.contains(.enableHapticFeedback) {
+#if os(iOS)
                         generator.prepare()
+#endif
                     }
                     let result = await actionTask.result
-                    let index = operations.lastIndex { operation in
-                        if case .loading(let task) = operation {
-                            return task == actionTask
-                        } else {
-                            return false
-                        }
-                    }
-                    operations[index!] = .completed(actionTask, result)
-                    if options.contains(.enableNotificationFeedback) {
+                    operations[actionTask] = .completed(actionTask, result)
+                    if options.contains(.enableHapticFeedback) {
+#if os(iOS)
                         switch result {
                         case .success:
                             generator.notificationOccurred(.success)
                         case .failure:
                             generator.notificationOccurred(.error)
                         }
+#elseif os(watchOS)
+                        switch result {
+                        case .success:
+                            watchDevice.play(options.contains(.enableSuccessHapticFeedback) ? .success : .click)
+                        case .failure:
+                            watchDevice.play(.failure)
+                        }
+#endif
                     }
                     if options.contains(.enableTintFeedback) {
                         withAnimation(.linear(duration: 0.1)) {
@@ -88,16 +103,16 @@ public struct AsyncButton<Label> : View where Label : View {
                 }
             },
             label: {
-                label(operations)
+                label(operationIsLoading)
                     .opacity(showProgressView ? 0 : 1)
-                    .overlay {
-                        if showProgressView {
-                            ProgressView()
-                        }
-                    }
+
+                if showProgressView {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
             }
         )
-        .disabled(disableButton)
+        .disabled(buttonDisabled)
         .animation(transaction.animation, value: operations)
         .tint(tint)
         .alert(isPresented: $showingErrorAlert, error: localizedError) { error in
@@ -111,13 +126,13 @@ public struct AsyncButton<Label> : View where Label : View {
         }
 
     }
-    
+
     public init(
         role: ButtonRole? = nil,
         options: AsyncButtonOptions = [],
         transaction: Transaction = Transaction(),
         action: @escaping () async throws -> Void,
-        @ViewBuilder label: @escaping ([AsyncButtonOperation]) -> Label
+        @ViewBuilder label: @escaping (Bool) -> Label
     ) {
         self.role = role
         self.options = options
@@ -127,9 +142,9 @@ public struct AsyncButton<Label> : View where Label : View {
     }
 }
 
-extension AsyncButton {
-    
-    public init(
+public extension AsyncButton {
+
+    init(
         role: ButtonRole? = nil,
         options: AsyncButtonOptions = .automatic,
         transaction: Transaction = Transaction(animation: .default),
@@ -142,24 +157,24 @@ extension AsyncButton {
     }
 }
 
-extension AsyncButton where Label == Text {
-    
-    public init(
+public extension AsyncButton where Label == Text {
+
+    init(
         _ titleKey: LocalizedStringKey,
         role: ButtonRole? = nil,
         options: AsyncButtonOptions = .automatic,
         transaction: Transaction = Transaction(animation: .default),
         action: @escaping () async throws -> Void
     ) {
-        self.init(role: role, options: options, transaction: transaction, action: action) { operations in
+        self.init(role: role, options: options, transaction: transaction, action: action) { _ in
             Text(titleKey)
         }
     }
 }
 
-extension AsyncButton where Label == Text {
-    
-    public init<S>(
+public extension AsyncButton where Label == Text {
+
+    init<S>(
         _ title: S,
         role: ButtonRole?,
         options: AsyncButtonOptions = .automatic,
@@ -167,7 +182,7 @@ extension AsyncButton where Label == Text {
         action: @escaping () async throws -> Void
     ) where S : StringProtocol
     {
-        self.init(role: role, options: options, transaction: transaction, action: action) { operations in
+        self.init(role: role, options: options, transaction: transaction, action: action) { _ in
             Text(title)
         }
     }

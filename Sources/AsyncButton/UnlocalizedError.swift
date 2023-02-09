@@ -1,10 +1,10 @@
 import Foundation
 
-struct UnlocalizedError: LocalizedError {
-    
+struct UnlocalizedError: LocalizedError, Codable {
     let errorDescription: String?
-    
+
     init(error: Error) {
         self.errorDescription = error.localizedDescription
     }
 }
+
